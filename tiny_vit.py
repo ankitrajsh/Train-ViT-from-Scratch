@@ -703,3 +703,73 @@ def tiny_vit_21m_512(pretrained=False, **kwargs):
     )
     model_kwargs.update(kwargs)
     return _create_tiny_vit('tiny_vit_21m_512', pretrained, **model_kwargs)
+
+
+
+
+import torch
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+
+
+
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))  # Normalizing with CIFAR-10 dataset mean and std
+])
+
+# Load the training and test sets
+trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
+trainloader = DataLoader(trainset, batch_size=64, shuffle=True)
+testloader = DataLoader(testset, batch_size=64, shuffle=False)
+
+
+model = TinyViT(img_size=32, in_chans=3, num_classes=10, 
+                embed_dims=[96, 192, 384, 768], depths=[2, 2, 6, 2],
+                num_heads=[3, 6, 12, 24], window_sizes=[7, 7, 14, 7],
+                drop_path_rate=0.1)
+
+
+criterion = torch.nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+
+
+num_epochs = 10  # Or however many you deem necessary
+
+for epoch in range(num_epochs):
+    running_loss = 0.0
+    for i, data in enumerate(trainloader, 0):
+        inputs, labels = data
+        optimizer.zero_grad()
+
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+        if i % 200 == 199:  # Print every 200 mini-batches
+            print('[%d, %5d] loss: %.3f' %
+                  (epoch + 1, i + 1, running_loss / 200))
+            running_loss = 0.0
+
+print('Finished Training')
+
+
+
+
+correct = 0
+total = 0
+with torch.no_grad():
+    for data in testloader:
+        images, labels = data
+        outputs = model(images)
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+print('Accuracy of the network on the 10000 test images: %d %%' % (
+    100 * correct / total))
