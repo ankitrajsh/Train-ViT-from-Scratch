@@ -712,11 +712,13 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 
-
 transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomCrop(32, padding=4),
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))  # Normalizing with CIFAR-10 dataset mean and std
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
 ])
+
 
 # Load the training and test sets
 trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
@@ -733,9 +735,12 @@ model = TinyViT(img_size=32, in_chans=3, num_classes=10,
 
 
 criterion = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
-
+###########################################
+for name, param in model.named_parameters():
+    if param.grad is not None:
+        print(f"{name} grad: {param.grad.abs().mean().item()}")
 
 num_epochs = 10  # Or however many you deem necessary
 
@@ -758,7 +763,38 @@ for epoch in range(num_epochs):
 
 print('Finished Training')
 
+# Specify the path where the model will be saved
+save_path = './tinyvit_cifar10.pth'
 
+# Save the entire model
+torch.save(model.state_dict(), save_path)
+print(f"Model saved to {save_path}")
+
+##############################################################################################
+
+
+best_loss = float('inf')
+
+for epoch in range(num_epochs):
+    running_loss = 0.0
+    for i, data in enumerate(trainloader, 0):
+        inputs, labels = data
+        optimizer.zero_grad()
+
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item()
+
+    # Save model if current epoch loss is better
+    if running_loss < best_loss:
+        best_loss = running_loss
+        torch.save(model.state_dict(), save_path)
+        print(f"Best model saved with loss: {best_loss:.4f}")
+
+print('Finished Training')
 
 
 correct = 0
@@ -773,3 +809,74 @@ with torch.no_grad():
 
 print('Accuracy of the network on the 10000 test images: %d %%' % (
     100 * correct / total))
+
+
+
+
+
+#####################################################################
+import time
+from torch.utils.tensorboard import SummaryWriter  # Optional for logging
+
+# Initialize TensorBoard writer (optional)
+writer = SummaryWriter()
+
+# Training configuration
+num_epochs = 10
+log_interval = 200  # Print/log every 200 mini-batches
+
+# Training loop
+for epoch in range(num_epochs):
+    epoch_start_time = time.time()
+    running_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    for i, data in enumerate(trainloader, 0):
+        inputs, labels = data
+        optimizer.zero_grad()
+
+        # Forward pass
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+
+        # Backward pass and optimization
+        loss.backward()
+        optimizer.step()
+
+        # Accumulate metrics
+        running_loss += loss.item()
+        _, predicted = torch.max(outputs, 1)
+        total_correct += (predicted == labels).sum().item()
+        total_samples += labels.size(0)
+
+        # Print/log statistics every `log_interval` batches
+        if i % log_interval == log_interval - 1:
+            avg_loss = running_loss / log_interval
+            accuracy = total_correct / total_samples * 100
+            print(f"[Epoch {epoch + 1}, Batch {i + 1}] "
+                  f"Loss: {avg_loss:.3f}, Accuracy: {accuracy:.2f}%")
+
+            # Log to TensorBoard
+            writer.add_scalar('Loss/train', avg_loss, epoch * len(trainloader) + i)
+            writer.add_scalar('Accuracy/train', accuracy, epoch * len(trainloader) + i)
+
+            # Reset running metrics
+            running_loss = 0.0
+            total_correct = 0
+            total_samples = 0
+
+    # Epoch summary
+    epoch_time = time.time() - epoch_start_time
+    print(f"Epoch {epoch + 1} completed in {epoch_time:.2f}s")
+
+    # Log gradients and weights
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            writer.add_scalar(f'Gradients/{name}', param.grad.abs().mean().item(), epoch)
+        writer.add_scalar(f'Weights/{name}', param.abs().mean().item(), epoch)
+
+print('Finished Training')
+
+# Close the TensorBoard writer
+writer.close()
