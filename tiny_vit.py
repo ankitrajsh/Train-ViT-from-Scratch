@@ -815,6 +815,7 @@ print('Accuracy of the network on the 10000 test images: %d %%' % (
 
 
 #####################################################################
+###if gpu is not available
 import time
 from torch.utils.tensorboard import SummaryWriter  # Optional for logging
 
@@ -822,8 +823,8 @@ from torch.utils.tensorboard import SummaryWriter  # Optional for logging
 writer = SummaryWriter()
 
 # Training configuration
-num_epochs = 10
-log_interval = 200  # Print/log every 200 mini-batches
+num_epochs = 20  # Number of training epochs
+log_interval = 40  # Print/log every 200 mini-batches
 
 # Training loop
 for epoch in range(num_epochs):
@@ -880,3 +881,128 @@ print('Finished Training')
 
 # Close the TensorBoard writer
 writer.close()
+
+
+
+cuda = torch.cuda.is_available()
+print(cuda)
+
+
+#####################################################################################################################
+####if gpu is available
+
+import torch
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+
+# Define transformations
+transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomCrop(32, padding=4),
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+])
+
+# Load the training and test sets
+trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+
+trainloader = DataLoader(trainset, batch_size=64, shuffle=True)
+testloader = DataLoader(testset, batch_size=64, shuffle=False)
+
+# Check for GPU availability
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# Define model (ensure you import TinyViT)
+model = TinyViT(img_size=32, in_chans=3, num_classes=10, 
+                embed_dims=[96, 192, 384, 768], depths=[2, 2, 6, 2],
+                num_heads=[3, 6, 12, 24], window_sizes=[7, 7, 14, 7],
+                drop_path_rate=0.1)
+
+# Move model to device
+model = model.to(device)
+
+# Define loss function and optimizer
+criterion = torch.nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+
+import time
+from torch.utils.tensorboard import SummaryWriter  # Optional for logging
+
+# Initialize TensorBoard writer (optional)
+writer = SummaryWriter()
+
+# Training configuration
+num_epochs = 20  # Number of training epochs
+log_interval = 40  # Print/log every 200 mini-batches
+
+# Training loop
+for epoch in range(num_epochs):
+    epoch_start_time = time.time()
+    running_loss = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    for i, data in enumerate(trainloader, 0):
+        inputs, labels = data
+
+        # Move inputs and labels to the device
+        inputs, labels = inputs.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+
+        # Forward pass
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+
+        # Backward pass and optimization
+        loss.backward()
+        optimizer.step()
+
+        # Accumulate metrics
+        running_loss += loss.item()
+        _, predicted = torch.max(outputs, 1)
+        total_correct += (predicted == labels).sum().item()
+        total_samples += labels.size(0)
+
+        # Print/log statistics every `log_interval` batches
+        if i % log_interval == log_interval - 1:
+            avg_loss = running_loss / log_interval
+            accuracy = total_correct / total_samples * 100
+            print(f"[Epoch {epoch + 1}, Batch {i + 1}] "
+                  f"Loss: {avg_loss:.3f}, Accuracy: {accuracy:.2f}%")
+
+            # Log to TensorBoard
+            writer.add_scalar('Loss/train', avg_loss, epoch * len(trainloader) + i)
+            writer.add_scalar('Accuracy/train', accuracy, epoch * len(trainloader) + i)
+
+            # Reset running metrics
+            running_loss = 0.0
+            total_correct = 0
+            total_samples = 0
+
+    # Epoch summary
+    epoch_time = time.time() - epoch_start_time
+    print(f"Epoch {epoch + 1} completed in {epoch_time:.2f}s")
+
+    # Log gradients and weights
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            writer.add_scalar(f'Gradients/{name}', param.grad.abs().mean().item(), epoch)
+        writer.add_scalar(f'Weights/{name}', param.abs().mean().item(), epoch)
+
+print('Finished Training')
+
+# Close the TensorBoard writer
+writer.close()
+
+
+
+def save_model(model, path):
+    torch.save(model.state_dict(), path)
+    print(f"Model saved to {path}")
+
+# Save the trained model
+save_model_path = "trained_model.pth"
+save_model(model, save_model_path)
