@@ -1,11 +1,3 @@
-# --------------------------------------------------------
-# TinyViT Model Architecture
-# Copyright (c) 2022 Microsoft
-# Adapted from LeViT and Swin Transformer
-#   LeViT: (https://github.com/facebookresearch/levit)
-#   Swin: (https://github.com/microsoft/swin-transformer)
-# Build the TinyViT Model
-# --------------------------------------------------------
 
 import itertools
 from typing import Tuple
@@ -888,6 +880,7 @@ cuda = torch.cuda.is_available()
 print(cuda)
 
 
+
 #####################################################################################################################
 ####if gpu is available
 
@@ -934,7 +927,7 @@ from torch.utils.tensorboard import SummaryWriter  # Optional for logging
 writer = SummaryWriter()
 
 # Training configuration
-num_epochs = 20  # Number of training epochs
+num_epochs = 50  # Number of training epochs
 log_interval = 40  # Print/log every 200 mini-batches
 
 # Training loop
@@ -1006,3 +999,261 @@ def save_model(model, path):
 # Save the trained model
 save_model_path = "trained_model.pth"
 save_model(model, save_model_path)
+
+
+
+
+
+import torch.quantization
+
+# Ensure the model is on CPU and in evaluation mode.
+model.cpu()
+model.eval()
+
+# Specify the quantization configuration (Quantize to int8)
+quantization_config = torch.quantization.get_default_qconfig('fbgemm')
+
+# Apply the configuration to the model
+model.qconfig = quantization_config
+
+# Convert the model to a quantized version
+torch.quantization.prepare(model, inplace=True)
+torch.quantization.convert(model, inplace=True)
+
+# Continue with evaluation or saving the quantized model
+print("Quantization complete.")
+
+
+
+
+
+
+
+
+
+################################
+# Load the quantized model (post-training quantization)
+import torch
+import torch.nn as nn
+from torch.optim import Adam
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+from torch.utils.tensorboard import SummaryWriter
+
+
+# Setup device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# Data transformations
+transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomCrop(32, padding=4),
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+])
+
+# Data loaders
+trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+trainloader = DataLoader(trainset, batch_size=64, shuffle=True)
+
+testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+testloader = DataLoader(testset, batch_size=64, shuffle=False)
+
+# Model setup
+model = TinyViT(img_size=32, in_chans=3, num_classes=10, embed_dims=[96, 192, 384, 768], depths=[2, 2, 6, 2],
+                num_heads=[3, 6, 12, 24], window_sizes=[7, 7, 14, 7], drop_path_rate=0.1)
+model = model.to(device)
+
+# Loss and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = Adam(model.parameters(), lr=0.0001)
+
+# Training loop
+num_epochs = 50
+for epoch in range(num_epochs):
+    model.train()
+    for i, (inputs, labels) in enumerate(trainloader):
+        inputs, labels = inputs.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+        if i % 100 == 99:
+            print(f"Epoch {epoch+1}, Batch {i+1}, Loss: {loss.item():.4f}")
+
+    # Evaluate after each epoch
+    model.eval()
+    with torch.no_grad():
+        correct = 0
+        total = 0
+        for inputs, labels in testloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+        print(f"Accuracy after epoch {epoch + 1}: {100 * correct / total:.2f}%")
+
+print('Finished Training')
+
+# Post-Training Quantization
+model.cpu()
+model.eval()
+
+# Specify quantization configuration
+model.qconfig = torch.quantization.default_qconfig
+print(model.qconfig)
+
+# Prepare the model for quantization
+torch.quantization.prepare(model, inplace=True)
+
+# Convert the model to a quantized version
+torch.quantization.convert(model, inplace=True)
+
+# Verify the quantized model
+model.eval()
+with torch.no_grad():
+    correct = 0
+    total = 0
+    for inputs, labels in testloader:
+        outputs = model(inputs)
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+    print(f"Quantized model accuracy: {100 * correct / total:.2f}%")
+
+# Save the quantized model
+torch.save(model.state_dict(), "tinyvit_quantized.pth")
+print("Quantized model saved.")
+
+
+############################################################################################################
+# Load the quantized model (4 bit post-training quantization)
+
+#quantized model 4bit
+import torch
+
+def quantize_to_4bit(tensor):
+    # Scale tensor to the range of 0-15 (4 bits)
+    min_val, max_val = tensor.min(), tensor.max()
+    scale = 15 / (max_val - min_val)
+    quantized = torch.clamp((tensor - min_val) * scale, 0, 15).int()
+    return quantized
+
+def dequantize_from_4bit(quantized, min_val, max_val):
+    # Convert back to float
+    scale = (max_val - min_val) / 15
+    dequantized = (quantized.float() * scale) + min_val
+    return dequantized
+
+# Example tensor
+tensor = torch.randn(10, 10)
+
+# Quantization
+quantized = quantize_to_4bit(tensor)
+print("Quantized Tensor:", quantized)
+
+# # Dequantization
+# min_val, max_val = tensor.min(), tensor.max()
+# dequantized = dequantize_from_4bit(quantized, min_val, max_val)
+# print("Dequantized Tensor:", dequantized)
+
+
+
+############################################################################################################
+#quantized aware training 8bitint
+import torch
+import torch.nn as nn
+from torch.optim import Adam
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+from torch.quantization import QuantStub, DeQuantStub, prepare_qat, convert
+
+# Assuming TinyViT and all necessary classes have been imported
+
+class QuantizedTinyViT(TinyViT):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.quant = QuantStub()
+        self.dequant = DeQuantStub()
+
+    def forward(self, x):
+        x = self.quant(x)
+        x = super().forward_features(x)
+        x = self.dequant(x)
+        x = self.norm_head(x)
+        x = self.head(x)
+        return x
+
+# Setup device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Data transformations and loaders
+transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomCrop(32, padding=4),
+    transforms.ToTensor(),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+])
+
+trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+trainloader = DataLoader(trainset, batch_size=64, shuffle=True)
+testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+testloader = DataLoader(testset, batch_size=64, shuffle=False)
+
+# Define the model with quantization stubs
+model = QuantizedTinyViT(img_size=32, in_chans=3, num_classes=10, 
+                         embed_dims=[96, 192, 384, 768], depths=[2, 2, 6, 2],
+                         num_heads=[3, 6, 12, 24], window_sizes=[7, 7, 14, 7],
+                         drop_path_rate=0.1)
+model = model.to(device)
+
+# Specify the quantization configuration for QAT
+model.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
+prepare_qat(model, inplace=True)
+
+# Loss function and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = Adam(model.parameters(), lr=0.0001)
+
+# Training loop with QAT
+num_epochs = 10  # Shorter, since we're fine-tuning
+for epoch in range(num_epochs):
+    model.train()
+    for inputs, labels in trainloader:
+        inputs, labels = inputs.to(device), labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+
+    # Optional: Freeze quantizer parameters in the last few epochs
+    if epoch >= num_epochs - 3:
+        model.apply(torch.quantization.disable_observer)
+    if epoch >= num_epochs - 2:
+        model.apply(torch.nn.intrinsic.qat.freeze_bn_stats)
+
+    # Evaluate accuracy each epoch
+    model.eval()
+    correct = total = 0
+    with torch.no_grad():
+        for inputs, labels in testloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs, 1)
+            correct += (predicted == labels).sum().item()
+            total += labels.size(0)
+    print(f'Epoch {epoch+1}: Accuracy {100 * correct / total:.2f}%')
+
+# Convert to fully quantized model for deployment
+convert(model.eval(), inplace=True)
+print("Converted to fully quantized model.")
+
+# Save the quantized model
+torch.save(model.state_dict(), "quantized_tinyvit.pth")
